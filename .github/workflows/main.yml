@@ -1,0 +1,86 @@
+name: Docker Image Publish
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+
+    - name: Login to Azure Container Registry
+      uses: docker/login-action@v1
+      with:
+        registry: sampleragapp.azurecr.io
+        username: ${{ secrets.ACR_USERNAME }}
+        password: ${{ secrets.ACR_PASSWORD }}
+    
+    - name: Set IMAGE_DATE
+      id: set_image_date
+      run: echo "IMAGE_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+
+    - name: Get the current version
+      id: get_version
+      run: |
+        git fetch --tags
+        VERSION=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null || echo "0.0.0")
+        echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+    - name: Increment version
+      id: increment_version
+      run: |
+        if [[ "${{ github.event.head_commit.message }}" == *"[major]"* ]]; then
+          MAJOR=$(( $(echo $VERSION | cut -d. -f1) + 1 ))
+          MINOR=0
+        else
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(( $(echo $VERSION | cut -d. -f2) + 1 ))
+        fi
+        NEW_VERSION="${MAJOR}.${MINOR}"
+        echo "NEW_VERSION=${NEW_VERSION}" >> $GITHUB_ENV
+
+    - name: Configure Git
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Delete existing tag if it exists
+      env:
+        GH_PAT: ${{ secrets.GH_PAT }}
+      run: |
+        if git rev-parse ${{ env.NEW_VERSION }} >/dev/null 2>&1; then
+          git tag -d ${{ env.NEW_VERSION }}
+          git push https://x-access-token:${GH_PAT}@github.com/${{ github.repository }} :refs/tags/${{ env.NEW_VERSION }}
+        fi
+
+    - name: Debug Git Configuration
+      run: |
+        git config --list
+
+    - name: Tag the new version
+      env:
+        GH_PAT: ${{ secrets.GH_PAT }}
+      run: |
+        echo "Pushing tag ${{ env.NEW_VERSION }}"
+        git tag ${{ env.NEW_VERSION }}
+        git push https://x-access-token:${GH_PAT}@github.com/${{ github.repository }} ${{ env.NEW_VERSION }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v2
+      with:
+        context: .
+        file: WebApp.Dockerfile
+        push: true
+        tags: |
+          sampleragapp.azurecr.io/sample-rag-app:latest
+          sampleragapp.azurecr.io/sample-rag-app:${{ env.NEW_VERSION }}
+          sampleragapp.azurecr.io/sample-rag-app:${{ github.run_number }}
+          sampleragapp.azurecr.io/sample-rag-app:${{ env.IMAGE_DATE }}_${{ github.run_number }}
